@@ -6,8 +6,86 @@
 //===----------------------------------------------------------------------===//
 #include "ObElfReader.h"
 
-#include <vector>
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
+
+bool ObElfReader::LoadMaps(const char *path) {
+    auto file = fopen(path, "r");
+    if (file == nullptr) {
+        FLOGE("Unable to open maps file: %s", path);
+        return false;
+    }
+
+    char line[4096];
+    bool valid_header = false;
+    bool found_base = false;
+    dump_maps_.clear();
+
+    while (fgets(line, sizeof(line), file) != nullptr) {
+        if (strncmp(line, "SOFIXER_MAPS_V1", strlen("SOFIXER_MAPS_V1")) == 0) {
+            valid_header = true;
+            continue;
+        }
+        if (line[0] == '#' || line[0] == '\n') {
+            continue;
+        }
+
+        unsigned long long value;
+        if (sscanf(line, "mem_base_addr %llx", &value) == 1) {
+#ifndef __SO64__
+            if (value > UINT32_MAX) {
+                fclose(file);
+                FLOGE("64-bit base address in 32-bit maps file: %s", path);
+                return false;
+            }
+#endif
+            dump_so_base_ = static_cast<Elf_Addr>(value);
+            found_base = true;
+            continue;
+        }
+
+        unsigned long long start, end;
+        char permissions[5] = {};
+        if (sscanf(line, "%llx %llx %4s", &start, &end, permissions) != 3 ||
+            start >= end) {
+            continue;
+        }
+#ifndef __SO64__
+        if (start > UINT32_MAX || end > UINT32_MAX) {
+            fclose(file);
+            FLOGE("64-bit address in 32-bit maps file: %s", path);
+            return false;
+        }
+#endif
+
+        Elf_Word flags = 0;
+        if (permissions[0] == 'r') flags |= PF_R;
+        if (permissions[1] == 'w') flags |= PF_W;
+        if (permissions[2] == 'x') flags |= PF_X;
+
+        DumpMapRegion region = {
+            static_cast<Elf_Addr>(start),
+            static_cast<Elf_Addr>(end),
+            flags
+        };
+        if (!dump_maps_.empty() &&
+            dump_maps_.back().end == region.start &&
+            dump_maps_.back().flags == region.flags) {
+            dump_maps_.back().end = region.end;
+        } else {
+            dump_maps_.push_back(region);
+        }
+    }
+
+    bool ok = !ferror(file) && valid_header && found_base &&
+              !dump_maps_.empty();
+    fclose(file);
+    if (!ok) {
+        FLOGE("Invalid maps file: %s", path);
+    }
+    return ok;
+}
 
 void ObElfReader::FixDumpSoPhdr() {
     // some shell will release data between loadable phdr(s), just load all memory data
@@ -180,4 +258,3 @@ bool ObElfReader::haveDynamicSectionInLoadableSegment() {
     }
     return false;
 }
-

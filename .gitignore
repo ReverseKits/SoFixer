@@ -3,3 +3,4 @@ cmake-*
 res
 test
 build
+.vscode

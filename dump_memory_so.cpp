@@ -32,7 +32,6 @@ struct ElfLayout {
 struct Mapping {
   uint64_t start;
   uint64_t end;
-  uint64_t offset;
   char permissions[5];
   std::string path;
 };
@@ -189,7 +188,6 @@ static bool read_maps(pid_t pid, std::vector<Mapping> *mappings) {
     Mapping mapping;
     mapping.start = start;
     mapping.end = end;
-    mapping.offset = offset;
     memcpy(mapping.permissions, permissions, sizeof(mapping.permissions));
     mapping.path = path;
     mappings->push_back(mapping);
@@ -286,6 +284,46 @@ static bool dump_memory(pid_t pid, const std::vector<Mapping> &mappings,
   return ok;
 }
 
+static bool write_maps(const std::vector<Mapping> &mappings,
+                       uint64_t load_bias, const ElfLayout &layout,
+                       const char *output_path) {
+  std::string maps_path = std::string(output_path) + ".maps";
+  FILE *file = fopen(maps_path.c_str(), "we");
+  if (file == NULL) {
+    fprintf(stderr, "Cannot create %s: %s\n", maps_path.c_str(),
+            strerror(errno));
+    return false;
+  }
+
+  fprintf(file, "SOFIXER_MAPS_V1\n"
+                "mem_base_addr %016" PRIx64 "\n"
+                "# start_rva end_rva permissions path\n",
+          load_bias);
+
+  uint64_t range_start = load_bias + layout.min_vaddr;
+  uint64_t range_end = load_bias + layout.max_vaddr;
+  for (size_t i = 0; i < mappings.size(); ++i) {
+    const Mapping &mapping = mappings[i];
+    if (mapping.end <= range_start || mapping.start >= range_end)
+      continue;
+
+    uint64_t start = std::max(mapping.start, range_start) - load_bias;
+    uint64_t end = std::min(mapping.end, range_end) - load_bias;
+    const char *path = mapping.path.empty() ? "-" : mapping.path.c_str();
+    fprintf(file, "%016" PRIx64 " %016" PRIx64 " %s %s\n", start, end,
+            mapping.permissions, path);
+  }
+
+  bool ok = !ferror(file);
+  if (fclose(file) != 0)
+    ok = false;
+  if (!ok) {
+    fprintf(stderr, "Cannot write %s: %s\n", maps_path.c_str(),
+            strerror(errno));
+  }
+  return ok;
+}
+
 int main(int argc, char **argv) {
   if (argc != 5) {
     usage(argv[0]);
@@ -347,7 +385,11 @@ int main(int argc, char **argv) {
                    output_path)) {
     return EXIT_FAILURE;
   }
+  if (!write_maps(mappings, load_bias, layout, output_path)) {
+    return EXIT_FAILURE;
+  }
 
-  fprintf(stderr, "Dump completed: %s\n", output_path);
+  fprintf(stderr, "Dump completed: %s\nMaps saved: %s.maps\n", output_path,
+          output_path);
   return EXIT_SUCCESS;
 }

@@ -8,7 +8,15 @@
 #define SOFIXER_OBELFREADER_H
 
 #include "ElfReader.h"
+#include <vector>
+
 class ElfRebuilder;
+
+struct DumpMapRegion {
+    Elf_Addr start;
+    Elf_Addr end;
+    Elf_Word flags;
+};
 
 class ObElfReader: public ElfReader {
 public:
@@ -19,8 +27,7 @@ public:
 
     bool Load() override;
     bool LoadDynamicSectionFromBaseSource();
-
-    void setDumpSoBaseAddr(Elf_Addr base) { dump_so_base_ = base; }
+    bool LoadMaps(const char* path);
 
     void setBaseSoName(const char* name) {
         baseso_ = name;
@@ -33,6 +40,7 @@ private:
     void ApplyDynamicSection();
 
     Elf_Addr dump_so_base_ = 0;
+    std::vector<DumpMapRegion> dump_maps_;
 
     const char* baseso_ = nullptr;
 

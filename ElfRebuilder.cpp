@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include <cstdio>
+#include <algorithm>
 #include "ElfRebuilder.h"
 #include "elf.h"
 #include "FDebug.h"
@@ -32,6 +33,18 @@ bool ElfRebuilder::RebuildPhdr() {
         // fix file offset.
         phdr->p_paddr = phdr->p_vaddr;
         phdr->p_offset = phdr->p_vaddr;     // elf has been loaded.
+        if (phdr->p_type == PT_LOAD) {
+            for (const auto &region : elf_reader_->dump_maps_) {
+                if ((region.flags & PF_X) &&
+                    region.start < phdr->p_vaddr + phdr->p_memsz &&
+                    region.end > phdr->p_vaddr) {
+                    // Keep the original program-header layout, but make the
+                    // containing LOAD executable so IDA honors AX sections.
+                    phdr->p_flags |= PF_X;
+                    break;
+                }
+            }
+        }
         phdr++;
     }
     FLOGD("=====================RebuildPhdr End======================");
@@ -389,26 +402,56 @@ bool ElfRebuilder::RebuildShdr() {
 //        shdrs.push_back(shdr);
 //    }
 
-    // gen .data
-    if(true) {
-        sDATA = shdrs.size();
-        auto sLast = sDATA - 1;
+    // Rebuild the remaining memory using the runtime permissions recorded
+    // by dump_memory_so. Existing dynamic sections take precedence.
+    Elf_Addr remaining_start = 0;
+    for (size_t i = 1; i < shdrs.size(); ++i) {
+        remaining_start = std::max<Elf_Addr>(
+            remaining_start, shdrs[i].sh_addr + shdrs[i].sh_size);
+    }
 
-        Elf_Shdr shdr;
+    unsigned text_count = 0;
+    unsigned data_count = 0;
+    unsigned rodata_count = 0;
+    for (const auto &region : elf_reader_->dump_maps_) {
+        Elf_Addr start = std::max<Elf_Addr>(region.start, remaining_start);
+        Elf_Addr end = std::min<Elf_Addr>(region.end, si.max_load);
+        if (start >= end || region.flags == 0) {
+            continue;
+        }
+
+        std::string name;
+        unsigned index;
+        if (region.flags & PF_X) {
+            name = ".unpacked.text";
+            index = text_count++;
+        } else if (region.flags & PF_W) {
+            name = ".data";
+            index = data_count++;
+        } else {
+            name = ".rodata";
+            index = rodata_count++;
+        }
+        if (index != 0) {
+            name += "." + std::to_string(index);
+        }
+
+        Elf_Shdr shdr = {};
         shdr.sh_name = shstrtab.length();
-        shstrtab.append(".data");
+        shstrtab.append(name);
         shstrtab.push_back('\0');
-
         shdr.sh_type = SHT_PROGBITS;
-        shdr.sh_flags = SHF_ALLOC | SHF_WRITE;
-        shdr.sh_addr = shdrs[sLast].sh_addr + shdrs[sLast].sh_size;
-        shdr.sh_offset = shdr.sh_addr;
-        shdr.sh_size = si.max_load - shdr.sh_addr;
-        shdr.sh_link = 0;
-        shdr.sh_info = 0;
-        shdr.sh_addralign = 4;
-        shdr.sh_entsize = 0x0;
+        shdr.sh_flags = SHF_ALLOC;
+        if (region.flags & PF_W) shdr.sh_flags |= SHF_WRITE;
+        if (region.flags & PF_X) shdr.sh_flags |= SHF_EXECINSTR;
+        shdr.sh_addr = start;
+        shdr.sh_offset = start;
+        shdr.sh_size = end - start;
+        shdr.sh_addralign = (region.flags & PF_X) ? 4 : sizeof(Elf_Addr);
 
+        if (sDATA == 0 && (region.flags & PF_W)) {
+            sDATA = shdrs.size();
+        }
         shdrs.push_back(shdr);
     }
 
@@ -809,7 +852,4 @@ bool ElfRebuilder::RebuildRelocs() {
     FLOGD("=======================RebuildRelocs End=======================");
     return true;
 }
-
-
-
 
