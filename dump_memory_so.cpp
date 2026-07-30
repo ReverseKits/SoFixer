@@ -39,10 +39,23 @@ struct Mapping {
 static void usage(const char *program) {
   fprintf(stderr,
           "Usage:\n"
-          "  %s <pid> <so-name-or-path> <original-so> <output-file>\n\n"
+          "  %s <pid> <module-base> <original-so> <output-file>\n\n"
           "Example:\n"
-          "  %s 25961 libfoo.so ./libfoo.so ./libfoo_dump.so\n",
+          "  %s 25961 0x78a88b8000 ./libfoo.so ./libfoo_dump.so\n",
           program, program);
+}
+
+static bool parse_address(const char *text, uint64_t *address) {
+  char *end = NULL;
+
+  errno = 0;
+  unsigned long long value = strtoull(text, &end, 16);
+  if (errno != 0 || end == text || *end != '\0') {
+    return false;
+  }
+
+  *address = static_cast<uint64_t>(value);
+  return true;
 }
 
 static uint64_t page_start(uint64_t value, uint64_t page_size) {
@@ -133,18 +146,6 @@ static bool read_elf_layout(const char *path, ElfLayout *layout) {
   if (!ok)
     fprintf(stderr, "Invalid or unsupported ELF: %s\n", path);
   return ok;
-}
-
-static std::string basename_of(const std::string &path) {
-  size_t slash = path.rfind('/');
-  return slash == std::string::npos ? path : path.substr(slash + 1);
-}
-
-static bool path_matches(const std::string &mapped,
-                         const std::string &requested) {
-  return requested.find('/') != std::string::npos
-             ? mapped == requested
-             : basename_of(mapped) == requested;
 }
 
 static bool read_maps(pid_t pid, std::vector<Mapping> *mappings) {
@@ -284,9 +285,8 @@ static bool dump_memory(pid_t pid, const std::vector<Mapping> &mappings,
   return ok;
 }
 
-static bool write_maps(const std::vector<Mapping> &mappings,
-                       uint64_t load_bias, const ElfLayout &layout,
-                       const char *output_path) {
+static bool write_maps(const std::vector<Mapping> &mappings, uint64_t load_bias,
+                       const ElfLayout &layout, const char *output_path) {
   std::string maps_path = std::string(output_path) + ".maps";
   FILE *file = fopen(maps_path.c_str(), "we");
   if (file == NULL) {
@@ -295,9 +295,10 @@ static bool write_maps(const std::vector<Mapping> &mappings,
     return false;
   }
 
-  fprintf(file, "SOFIXER_MAPS_V1\n"
-                "mem_base_addr %016" PRIx64 "\n"
-                "# start_rva end_rva permissions path\n",
+  fprintf(file,
+          "SOFIXER_MAPS_V1\n"
+          "mem_base_addr %016" PRIx64 "\n"
+          "# start_rva end_rva permissions path\n",
           load_bias);
 
   uint64_t range_start = load_bias + layout.min_vaddr;
@@ -324,6 +325,7 @@ static bool write_maps(const std::vector<Mapping> &mappings,
   return ok;
 }
 
+
 int main(int argc, char **argv) {
   if (argc != 5) {
     usage(argv[0]);
@@ -338,7 +340,12 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  const char *requested_so = argv[2];
+  uint64_t module_base;
+  if (!parse_address(argv[2], &module_base)) {
+    fprintf(stderr, "Invalid module base: %s\n", argv[2]);
+    return EXIT_FAILURE;
+  }
+
   const char *original_so = argv[3];
   const char *output_path = argv[4];
 
@@ -354,32 +361,26 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  const Mapping *anchor = NULL;
-  for (size_t i = 0; i < mappings.size(); ++i) {
-    const Mapping &mapping = mappings[i];
-    if (path_matches(mapping.path, requested_so)) {
-      anchor = &mapping;
-      break;
-    }
-  }
-
-  if (anchor == NULL) {
-    fprintf(stderr, "Cannot find the SO mapping\n");
+  if (module_base < layout.min_vaddr) {
+    fprintf(stderr,
+            "Module base %#" PRIx64
+            " is smaller than the ELF minimum virtual address %#" PRIx64 "\n",
+            module_base, layout.min_vaddr);
     return EXIT_FAILURE;
   }
-  if (same_file(anchor->path.c_str(), output_path)) {
-    fprintf(stderr, "Output must not overwrite the mapped SO\n");
+  uint64_t load_bias = module_base - layout.min_vaddr;
+  if (load_bias > UINT64_MAX - layout.max_vaddr) {
+    fprintf(stderr, "Module address range overflows\n");
     return EXIT_FAILURE;
   }
 
-  uint64_t load_bias = anchor->start - layout.min_vaddr;
   fprintf(stderr,
           "SO: %s\n"
-          "load_bias=%#" PRIx64 ", ELF range=%#" PRIx64 "-%#" PRIx64
-          ", dump size=%#" PRIx64 "\n"
+          "module_base=%#" PRIx64 ", load_bias=%#" PRIx64
+          ", ELF range=%#" PRIx64 "-%#" PRIx64 ", dump size=%#" PRIx64 "\n"
           "Dumping mappings:\n",
-          anchor->path.c_str(), load_bias, layout.min_vaddr, layout.max_vaddr,
-          layout.max_vaddr);
+          original_so, module_base, load_bias, layout.min_vaddr,
+          layout.max_vaddr, layout.max_vaddr);
 
   if (!dump_memory(static_cast<pid_t>(pid_value), mappings, load_bias, layout,
                    output_path)) {

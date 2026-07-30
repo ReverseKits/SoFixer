@@ -8,8 +8,36 @@
 相邻的 `[anon:.bss]` 映射：
 
 ```shell
-dump_memory_so <pid> <so-name-or-path> <original-so> <output-file>
+dump_memory_so <pid> <module-base> <original-so> <output-file>
 ```
+
+参数说明：
+
+- `pid`：目标进程 PID。
+- `module-base`：模块实际加载基址，以十六进制传入，支持带或不带 `0x`
+  前缀。该地址应使用 Frida 的 `Process.getModuleByName("libjiagu_sdk_SDKProtected.so").base`，不再根据
+  `/proc/<pid>/maps` 中同路径首次出现的映射推断。
+- `original-so`：用于读取 ELF Header 和 `PT_LOAD` 布局的原始 SO。
+- `output-file`：内存 dump 输出路径。
+
+例如：
+
+```shell
+dump_memory_so 25961 0x78a88b8000 \
+  ./libjiagu_sdk_SDKProtected.so \
+  ./libjiagu_sdk_dump.so
+```
+
+可以通过 Frida 获取 `module-base`：
+
+```javascript
+const module = Process.getModuleByName("libjiagu_sdk_SDKProtected.so");
+console.log("module base: " + module.base);
+```
+
+`dump_memory_so` 仍会读取 `/proc/<pid>/maps`，但只用于确定模块地址范围内
+实际可读的映射、保留映射空洞和包含相邻的匿名 BSS，不再用于选择模块
+加载基址。
 
 成功后还会生成 `<output-file>.maps`，其中记录完整 ELF 范围内各映射的
 RVA、权限和运行时 ELF 基址，供 SoFixer 重建 section 和修复重定位使用。
