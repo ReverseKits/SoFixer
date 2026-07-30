@@ -4,6 +4,13 @@
 #### dump_memory_so.cpp
 在android手机上执行用于dump so数据
 
+用原始 SO 的 `PT_LOAD.p_memsz` 计算完整内存范围，因此会包含与 SO
+相邻的 `[anon:.bss]` 映射：
+
+```shell
+dump_memory_so <pid> <so-name-or-path> <original-so> <output-file>
+```
+
 ## Build
 ```shell
 mkdir build
