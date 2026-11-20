@@ -4,6 +4,17 @@
 #### dump_memory_so.cpp
 在android手机上执行用于dump so数据
 
+在 Linux 或 macOS 上使用 Android NDK 交叉编译：
+
+```shell
+ANDROID_NDK_HOME=/path/to/android-ndk ./build_dump_memory_so.sh
+```
+
+默认编译 `arm64-v8a`，最低系统版本为 Android API 24，产物位于
+`build/android/arm64-v8a/api-24/dump_memory_so`。可传入 ABI 和 API
+级别，例如 `./build_dump_memory_so.sh armeabi-v7a 24`。脚本也支持
+`x86_64` 和 `x86`，并接受 `ANDROID_NDK_ROOT` 作为 NDK 路径。
+
 用原始 SO 的 `PT_LOAD.p_memsz` 计算完整内存范围，因此会包含与 SO
 相邻的 `[anon:.bss]` 映射：
 
